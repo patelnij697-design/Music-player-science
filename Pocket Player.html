@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pocket Player</title>
+<style>
+:root{--bg:#f5f3ef;--card:#ffffff;--fg:#1d1b19;--mute:#7a746c;--acc:#e0533d;--line:#e6e1d9;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141312;--card:#1f1d1b;--fg:#f2eee8;--mute:#9a938a;--acc:#ff7a62;--line:#2e2b28;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#141312;--card:#1f1d1b;--fg:#f2eee8;--mute:#9a938a;--acc:#ff7a62;--line:#2e2b28;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;min-height:100vh}
+.wrap{max-width:900px;margin:0 auto;padding:20px;display:grid;gap:18px;grid-template-columns:1fr}
+@media(min-width:760px){.wrap{grid-template-columns:340px 1fr;align-items:start}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:20px}
+.art{aspect-ratio:1;border-radius:16px;background:linear-gradient(135deg,var(--acc),#7b5cff);display:grid;place-items:center;font-size:84px;margin-bottom:16px}
+.art.spin{animation:pulse 3s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(.97)}}
+h1{font-size:20px;margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{color:var(--mute);font-size:14px;margin-bottom:14px}
+input[type=range]{width:100%;accent-color:var(--acc);height:28px}
+.times{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;font-variant-numeric:tabular-nums}
+.ctrl{display:flex;justify-content:center;align-items:center;gap:14px;margin-top:10px}
+button{font:inherit;color:var(--fg);background:none;border:0;cursor:pointer;border-radius:50%;width:48px;height:48px;font-size:22px}
+button:active{opacity:.6}
+button.on{color:var(--acc)}
+button.play{width:68px;height:68px;background:var(--acc);color:#fff;font-size:28px}
+.add{display:block;width:100%;border-radius:14px;height:50px;background:var(--fg);color:var(--bg);font-size:16px;font-weight:600;margin-bottom:12px}
+.list{list-style:none;margin:0;padding:0;max-height:70vh;overflow-y:auto}
+.list li{display:flex;gap:12px;align-items:center;padding:12px 8px;border-bottom:1px solid var(--line);cursor:pointer}
+.list li.cur{color:var(--acc);font-weight:600}
+.list .n{width:24px;color:var(--mute);font-size:13px;text-align:right}
+.list .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{color:var(--mute);text-align:center;padding:40px 10px;line-height:1.5}
+button.del{width:36px;height:36px;font-size:15px;color:var(--mute)}
+#store{font-size:12px;margin:0 0 8px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="card">
+    <div class="art" id="art">🎵</div>
+    <h1 id="title">Nothing playing</h1>
+    <div class="sub" id="sub">Add some songs to begin</div>
+    <input type="range" id="seek" min="0" max="1000" value="0">
+    <div class="times"><span id="cur">0:00</span><span id="dur">0:00</span></div>
+    <div class="ctrl">
+      <button id="shuf" title="Shuffle">🔀</button>
+      <button id="prev" title="Previous">⏮</button>
+      <button id="pp" class="play" title="Play">▶</button>
+      <button id="next" title="Next">⏭</button>
+      <button id="rep" title="Repeat">🔁</button>
+    </div>
+  </section>
+  <section class="card">
+    <button class="add" id="add">＋ Add songs from Files</button>
+    <input type="file" id="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac" multiple hidden>
+    <div class="sub" id="store"></div>
+    <ul class="list" id="list"></ul>
+    <div class="empty" id="empty">Tap “Add songs” and pick audio files from your iPad, iCloud Drive or a USB drive.<br>They’re saved on this iPad, so they’ll still be here next time, and they play offline.</div>
+  </section>
+</div>
+<audio id="a" preload="metadata"></audio>
+<script>
+const $=id=>document.getElementById(id);
+const a=$('a'),tracks=[];let idx=-1,shuffle=false,repeat=0,seeking=false;
+const fmt=s=>{if(!isFinite(s))return'0:00';s=Math.floor(s);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+const clean=n=>n.replace(/\.[^.]+$/,'').replace(/[_]+/g,' ');
+
+$('add').onclick=()=>$('file').click();
+let db=null;
+const dbOpen=()=>new Promise((res,rej)=>{try{const r=indexedDB.open('pocket-player',1);r.onupgradeneeded=()=>r.result.createObjectStore('songs',{keyPath:'id',autoIncrement:true});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}catch(e){rej(e)}});
+const dbAll=()=>new Promise((res,rej)=>{const q=db.transaction('songs').objectStore('songs').getAll();q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)});
+const dbPut=rec=>new Promise((res,rej)=>{const q=db.transaction('songs','readwrite').objectStore('songs').add(rec);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)});
+const dbDel=id=>new Promise((res,rej)=>{const q=db.transaction('songs','readwrite').objectStore('songs').delete(id);q.onsuccess=()=>res();q.onerror=()=>rej(q.error)});
+
+$('file').onchange=async e=>{
+  const files=[...e.target.files];e.target.value='';
+  const first=tracks.length===0;
+  for(const f of files){
+    const t={name:clean(f.name),url:URL.createObjectURL(f)};
+    if(db){
+      try{t.id=await dbPut({name:t.name,blob:f})}
+      catch(err){$('store').textContent='Could not save “'+t.name+'” (storage full?). It will play this session only.'}
+    }
+    tracks.push(t);
+  }
+  render();
+  if(first&&tracks.length)load(0,true);
+};
+
+async function removeTrack(i){
+  const t=tracks[i];
+  if(db&&t.id!=null){try{await dbDel(t.id)}catch(err){}}
+  URL.revokeObjectURL(t.url);
+  tracks.splice(i,1);
+  if(i===idx){
+    a.pause();a.removeAttribute('src');a.load();idx=-1;
+    $('title').textContent='Nothing playing';$('sub').textContent='Add some songs to begin';
+    $('cur').textContent='0:00';$('dur').textContent='0:00';$('seek').value=0;
+    if(tracks.length)load(Math.min(i,tracks.length-1),false);
+  }else if(i<idx)idx--;
+  render();
+}
+
+function render(){
+  $('empty').style.display=tracks.length?'none':'block';
+  $('list').innerHTML='';
+  tracks.forEach((t,i)=>{
+    const li=document.createElement('li');
+    if(i===idx)li.className='cur';
+    li.innerHTML='<span class="n">'+(i===idx&&!a.paused?'♪':i+1)+'</span><span class="t"></span><button class="del" title="Remove">✕</button>';
+    li.querySelector('.t').textContent=t.name;
+    li.querySelector('.del').onclick=ev=>{ev.stopPropagation();removeTrack(i)};
+    li.onclick=()=>load(i,true);
+    $('list').appendChild(li);
+  });
+}
+
+function load(i,play){
+  idx=i;const t=tracks[i];
+  a.src=t.url;
+  $('title').textContent=t.name;
+  $('sub').textContent='Track '+(i+1)+' of '+tracks.length;
+  if('mediaSession' in navigator){
+    navigator.mediaSession.metadata=new MediaMetadata({title:t.name,artist:'Pocket Player'});
+  }
+  if(play)a.play().catch(()=>{});
+  render();
+}
+
+function step(d){
+  if(!tracks.length)return;
+  let n;
+  if(shuffle&&tracks.length>1){do{n=Math.floor(Math.random()*tracks.length)}while(n===idx)}
+  else n=(idx+d+tracks.length)%tracks.length;
+  load(n,true);
+}
+
+$('pp').onclick=()=>{if(idx<0)return;a.paused?a.play():a.pause()};
+$('next').onclick=()=>step(1);
+$('prev').onclick=()=>{if(a.currentTime>3)a.currentTime=0;else step(-1)};
+$('shuf').onclick=e=>{shuffle=!shuffle;e.currentTarget.classList.toggle('on',shuffle)};
+$('rep').onclick=e=>{
+  repeat=(repeat+1)%3;
+  e.currentTarget.textContent=repeat===2?'🔂':'🔁';
+  e.currentTarget.classList.toggle('on',repeat>0);
+};
+
+a.onplay=()=>{$('pp').textContent='⏸';$('art').classList.add('spin');render()};
+a.onpause=()=>{$('pp').textContent='▶';$('art').classList.remove('spin');render()};
+a.onloadedmetadata=()=>{$('dur').textContent=fmt(a.duration)};
+a.ontimeupdate=()=>{
+  $('cur').textContent=fmt(a.currentTime);
+  if(!seeking&&a.duration)$('seek').value=a.currentTime/a.duration*1000;
+};
+a.onended=()=>{
+  if(repeat===2){a.currentTime=0;a.play();return}
+  if(repeat===0&&!shuffle&&idx===tracks.length-1){return}
+  step(1);
+};
+$('seek').oninput=()=>{seeking=true;$('cur').textContent=fmt($('seek').value/1000*a.duration)};
+$('seek').onchange=()=>{if(a.duration)a.currentTime=$('seek').value/1000*a.duration;seeking=false};
+
+if('mediaSession' in navigator){
+  const m=navigator.mediaSession;
+  m.setActionHandler('play',()=>a.play());
+  m.setActionHandler('pause',()=>a.pause());
+  m.setActionHandler('nexttrack',()=>step(1));
+  m.setActionHandler('previoustrack',()=>step(-1));
+}
+(async()=>{
+  try{
+    db=await dbOpen();
+    const rows=await dbAll();
+    rows.forEach(r=>tracks.push({id:r.id,name:r.name,url:URL.createObjectURL(r.blob)}));
+    if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+  }catch(err){db=null}
+  $('store').textContent=db?'Songs are saved on this iPad':'Saving isn’t available here, songs last until you close the page';
+  render();
+  if(tracks.length)load(0,false);
+})();
+</script>
+</body>
+</html>
